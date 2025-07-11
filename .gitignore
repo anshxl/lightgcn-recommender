@@ -10,3 +10,7 @@ venv/
 
 # cache
 __pycache__/
+
+# Large files
+*.pt
+train_triplets.txt.zip
