@@ -7,3 +7,6 @@ specs.md
 
 # venv
 venv/
+
+# cache
+__pycache__/

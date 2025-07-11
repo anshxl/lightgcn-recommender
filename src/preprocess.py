@@ -23,11 +23,11 @@ def loo(group):
 
 def main():
     # Load the dataset: tab-delimited TXT file with columns: user_id, song_id, play_count
-    df = pd.read_csv('data/train_triplets.txt', sep='\t', header=None, names=['user_id', 'song_id', 'play_count'])
+    df = pd.read_csv('data/train_triplets.txt', sep='\t', header=None, names=['user', 'song', 'playcount'])
 
     # Build index mapping
-    unique_users = df['user_id'].unique()
-    unique_songs = df['song_id'].unique()
+    unique_users = df['user'].unique()
+    unique_songs = df['song'].unique()
 
     user2idx = {user: idx for idx, user in enumerate(unique_users)}
     song2idx = {song: idx for idx, song in enumerate(unique_songs)}
@@ -43,6 +43,10 @@ def main():
     train_df = pd.concat(train_list).reset_index(drop=True)
     val_df   = pd.concat(val_list).reset_index(drop=True)
     test_df  = pd.concat(test_list).reset_index(drop=True)
+
+    # Save validation and test sets
+    val_df.to_csv('data/val_triplets.txt', sep='\t', index=False, header=False)
+    test_df.to_csv('data/test_triplets.txt', sep='\t', index=False, header=False)
 
     edge_index = torch.tensor([
         train_df['u_idx'].values,
