@@ -69,13 +69,12 @@ def train():
         model.train()
         epoch_loss = 0.0
         # iterate over mini-batches
-        for batch_size_u, n_id, adj in train_loader:
-            # adj: (edge_index, e_id, size) for this mini‐subgraph
-            edge_index_sub, _, size = adj[0]
-            batch_users = n_id[:batch_size_u]
+        for batch_data in train_loader:
+            batch_users = batch_data.batch.unique()
+            edge_index_sub = batch_data.edge_index
 
             # randomly sample positive & negative items for these users
-            users, pos, neg = sample_bpr_batch(
+            _, pos, neg = sample_bpr_batch(
                 batch_users, 
                 user2items, 
                 num_users, 
