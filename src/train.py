@@ -9,12 +9,11 @@ from tqdm.auto import tqdm
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-def evaluate_hr10(model, embeddings, val_interactions, num_users):
+def evaluate_hr10(embeddings, val_interactions, num_users):
     """
     Compute HR@10 over val_interactions (DataFrame with u_idx, s_idx).
     For each user, score all items, pick top-10, check hit.
     """
-    model.eval()
     with torch.no_grad():
         # embeddings = model.get_embedding(graph_data.edge_index.to(device))
         user_emb = embeddings[:num_users]
@@ -55,7 +54,7 @@ def train():
     graph_data_gpu = graph_data_cpu.to(device)
     # init model and optimizer
     model_gpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device)
-    model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3)  # for CPU eval
+    model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).cpu()  # for CPU eval
     model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
     optimizer = torch.optim.Adam(model_gpu.parameters(), lr=lr)
     scaler = GradScaler()
@@ -105,12 +104,13 @@ def train():
         # empty cache
         torch.cuda.empty_cache()
         model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
+        model_cpu.eval()
         with torch.no_grad():
             # get full embeddings on CPU
             emb_full = model_cpu.get_embedding(graph_data_cpu.edge_index)
 
         # validation
-        hr10 = evaluate_hr10(model_cpu, embeddings=emb_full, val_interactions=val_df, num_users=num_users)
+        hr10 = evaluate_hr10(embeddings=emb_full, val_interactions=val_df, num_users=num_users)
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
 
         # checkpoint
