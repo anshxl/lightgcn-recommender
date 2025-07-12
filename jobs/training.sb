@@ -13,6 +13,6 @@ module load Miniforge3
 module load CUDA/12.4.0
 
 # Activate env
-conda activate rec-sys
+conda activate pytorch
 
 python -m src.train

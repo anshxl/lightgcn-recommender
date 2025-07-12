@@ -12,6 +12,6 @@ module load Miniforge3
 module load CUDA/12.4.0
 
 # Activate env
-conda activate rec-sys
+conda activate torch
 
 python -m src.preprocess
