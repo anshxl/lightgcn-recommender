@@ -5,28 +5,47 @@ from torch.amp import autocast, GradScaler
 import pandas as pd
 from src.model import bpr_loss, sample_bpr_batch
 from tqdm.auto import tqdm
+import random
 
 # Check if CUDA is available
 print(f"CUDA available: {torch.cuda.is_available()}")
 
-def evaluate_hr10(embeddings, val_interactions, num_users):
+def evaluate_hr10(embeddings, val_df, num_users, num_items, user2items=None, num_neg=1000):
     """
-    Compute HR@10 over val_interactions (DataFrame with u_idx, s_idx).
-    For each user, score all items, pick top-10, check hit.
+    embeddings:    [num_users + num_items, D] tensor on CPU
+    val_df:        DataFrame with columns ['u_idx','s_idx'] (global item idx)
+    num_users:     number of users
+    num_items:     number of items
+    user2items:    dict u -> list of item-indices seen in training (global idx)
+    num_neg:       number of negatives to sample per positive
     """
-    with torch.no_grad():
-        # embeddings = model.get_embedding(graph_data.edge_index.to(device))
-        user_emb = embeddings[:num_users]
-        item_emb = embeddings[num_users:]
-        scores = user_emb @ item_emb.t()
+    user_emb = embeddings[:num_users]       # [U, D]
+    item_emb = embeddings[num_users:]       # [I, D]
+    hits, total = 0, 0
 
-    hits = 0
-    total = 0
-    for u, i in zip(val_interactions['u_idx'], val_interactions['s_idx']):
-        top10 = torch.topk(scores[u], k=10).indices.tolist()
-        if (i - num_users) in top10:
+    all_items = set(range(num_items))
+
+    for u, global_i in zip(val_df['u_idx'], val_df['s_idx']):
+        #shift to 0...I-1
+        pos_i = global_i - num_users  # global index to local item index
+        # sample negatives from items not seen by the user
+        neg_candidates = list(all_items - set(user2items[u]) - {pos_i})
+        negs = random.sample(neg_candidates, k=num_neg)
+
+        # build candidate list and fetch embeddings
+        candidates = [pos_i] + negs
+        u_emb = user_emb[u].unsqueeze(0)  # [1, D]
+        c_emb = item_emb[torch.tensor(candidates, dtype=torch.long)]   # [N, D]
+
+        # score and rank
+        scores = (u_emb @ c_emb.t()).squeeze(0) # [N]
+        topk = torch.topk(scores, k=10).indices.tolist()  # get top-10 indices
+
+        # positive is at index 0 in candidates
+        if 0 in topk:
             hits += 1
         total += 1
+
     return hits / total if total > 0 else 0.0
 
 def train():
@@ -86,10 +105,8 @@ def train():
                 num_users, 
                 num_items
             )
-
             if users.numel() == 0:
                 continue
-
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
                 embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device='cuda'))
@@ -111,7 +128,13 @@ def train():
             emb_full = model_cpu.get_embedding(edge_index_cpu)
 
         # validation
-        hr10 = evaluate_hr10(embeddings=emb_full, val_interactions=val_df, num_users=num_users)
+        hr10 = evaluate_hr10(
+            embeddings=emb_full, 
+            val_df=val_df, 
+            num_users=num_users, 
+            num_items=num_items, 
+            user2items=user2items, 
+            num_neg=1000)
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
 
         # checkpoint
