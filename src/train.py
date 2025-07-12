@@ -37,7 +37,7 @@ def train():
     fanout = [10, 10, 10]  # neighbor sampling fanout
 
     # load data and mappings
-    graph_data_cpu = torch.load('data/graph.pt', weights_only=False)
+    graph_data_cpu = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
     maps = torch.load('data/mappings.pt', weights_only=False)
     num_users = len(maps['user2idx'])
     num_items = len(maps['item2idx'])
