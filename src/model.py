@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import MessagePassing
 from torch_geometric.nn.models import LightGCN as _LightGCN
 import random
 
@@ -39,32 +38,36 @@ def bpr_loss(users, pos_items, neg_items, embeddings):
     return loss
 
 # BPR sampling
-def sample_bpr_batch(edge_index, num_users, num_items, batch_size):
+def sample_bpr_batch(batch_users: torch.Tensor,
+                     user2items: dict,
+                     num_users: int,
+                     num_items: int):
     """
-    edge_index: [2,E] with users in [0, U), items in [U, U+I)
-    returns: users, pos_items, neg_items as Tensors
+    batch_users: LongTensor of shape [B] with global user indices
+    user2items: dict mapping each user (0..num_users-1) to list of item indices
+    num_users, num_items: ints
+    Returns: (users, pos_items, neg_items) LongTensors of length ≤ B
     """
-    users = []
-    pos = []
-    neg = []
-    for _ in range(batch_size):
-        u = random.randrange(num_users)
-        # find positive item neighbors
-        pos_candidates = edge_index[1, edge_index[0] == u].tolist()
-        if not pos_candidates:
+    users, pos_items, neg_items = [], [], []
+
+    for u in batch_users.tolist():
+        pos_cands = user2items.get(u, [])
+        if not pos_cands:
             continue
-        i = random.choice(pos_candidates)
-        # sample negative item
-        j = random.randrange(num_items) + num_users
-        while j in pos_candidates:
-            j = random.randrange(num_items) + num_users
+
+        pos_i = random.choice(pos_cands)
+        # sample a neg item outside user's positives
+        neg_i = random.randrange(num_users, num_users + num_items)
+        while neg_i in pos_cands:
+            neg_i = random.randrange(num_users, num_users + num_items)
 
         users.append(u)
-        pos.append(i)
-        neg.append(j)
+        pos_items.append(pos_i)
+        neg_items.append(neg_i)
 
+    device = batch_users.device
     return (
-        torch.tensor(users, dtype=torch.long),
-        torch.tensor(pos, dtype=torch.long),
-        torch.tensor(neg, dtype=torch.long)
+        torch.tensor(users, dtype=torch.long, device=device),
+        torch.tensor(pos_items, dtype=torch.long, device=device),
+        torch.tensor(neg_items, dtype=torch.long, device=device),
     )
