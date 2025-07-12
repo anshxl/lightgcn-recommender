@@ -70,7 +70,7 @@ def train():
         epoch_loss = 0.0
         # iterate over mini-batches
         for batch_data in train_loader:
-            batch_users = batch_data.batch.unique()
+            batch_users = batch_data.n_id[: batch_data.batch_size]  # user indices in this batch
             edge_index_sub = batch_data.edge_index
 
             # randomly sample positive & negative items for these users
