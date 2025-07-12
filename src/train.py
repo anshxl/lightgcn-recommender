@@ -14,7 +14,7 @@ def evaluate_hr10(model, graph_data, val_interactions, mappings):
     """
     model.eval()
     with torch.no_grad():
-        embeddings = model(graph_data.edge_index.to(device))
+        embeddings = model.get_embedding(graph_data.edge_index.to(device))
         user_emb = embeddings[:mappings['num_users']]
         item_emb = embeddings[mappings['num_users']:]
         scores = user_emb @ item_emb.t()
@@ -85,7 +85,7 @@ def train():
 
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
-                embeddings = model(batch_data.edge_index.to(device))
+                embeddings = model.get_embedding(batch_data.edge_index.to(device))
                 loss = bpr_loss(batch_users, pos.to(device), neg.to(device), embeddings)
             
             # backward pass
