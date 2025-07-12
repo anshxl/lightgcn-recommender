@@ -81,7 +81,7 @@ def train():
                 num_items
             )
 
-            with autocast():
+            with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
                 embeddings = model(edge_index_sub.to(device))
                 loss = bpr_loss(batch_users, pos.to(device), neg.to(device), embeddings)
