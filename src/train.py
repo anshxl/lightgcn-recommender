@@ -75,3 +75,6 @@ def train():
             print(f"New best HR@10: {best_hr:.4f}, model saved.")
 
     print(f"Training complete. Best HR@10: {best_hr:.4f}")
+
+if __name__ == "__main__":
+    train()
