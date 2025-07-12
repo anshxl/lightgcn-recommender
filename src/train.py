@@ -54,34 +54,29 @@ def train():
     # Copy to GPU
     graph_data_gpu = graph_data_cpu.to(device)
     # init model and optimizer
-    model = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    model_gpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device)
+    model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3)  # for CPU eval
+    model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
+    optimizer = torch.optim.Adam(model_gpu.parameters(), lr=lr)
     scaler = GradScaler()
 
     # set up neighbor sampler
+    user_idx = torch.arange(num_users, device=device)  # only sample users
     train_loader = NeighborLoader(
         data=graph_data_gpu,
         num_neighbors=fanout,
         batch_size=batch_size,
-        input_nodes=torch.arange(num_users, device=device),  # only sample users
+        input_nodes=user_idx,  # only sample users
         shuffle=True,
     )
 
     best_hr = 0.0
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training epochs"):
-        model.train()
+        model_gpu.train()
         epoch_loss = 0.0
-
-        # wrap loader in tqdm
-        batch_iter = tqdm(
-            train_loader, 
-            desc=f"Epoch {epoch}/{num_epochs}", 
-            unit="batch",
-            leave=False
-        )
         
         # iterate over batches
-        for batch_data in batch_iter:
+        for batch_data in train_loader:
             batch_users = batch_data.input_id.to(device) # user indices in this batch
 
             # randomly sample positive & negative items for these users
@@ -97,7 +92,7 @@ def train():
 
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
-                embeddings = model.get_embedding(batch_data.edge_index.to(device))
+                embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device))
                 loss = bpr_loss(batch_users, pos.to(device), neg.to(device), embeddings)
             
             # backward pass
@@ -109,20 +104,19 @@ def train():
 
         # empty cache
         torch.cuda.empty_cache()
-        model_cpu = model.to('cpu')
+        model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
         with torch.no_grad():
             # get full embeddings on CPU
             emb_full = model_cpu.get_embedding(graph_data_cpu.edge_index)
-        model.to(device)
 
         # validation
-        hr10 = evaluate_hr10(model, embeddings=emb_full, val_interactions=val_df, num_users=num_users)
+        hr10 = evaluate_hr10(model_cpu, embeddings=emb_full, val_interactions=val_df, num_users=num_users)
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
 
         # checkpoint
         if hr10 > best_hr:
             best_hr = hr10
-            torch.save(model.state_dict(), 'model.pth')
+            torch.save(model_gpu.state_dict(), 'model.pth')
             print(f"New best HR@10: {best_hr:.4f}, model saved.")
 
     print(f"Training complete. Best HR@10: {best_hr:.4f}")
