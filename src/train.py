@@ -7,6 +7,7 @@ from src.model import bpr_loss, sample_bpr_batch
 from tqdm.auto import tqdm
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
 def evaluate_hr10(model, embeddings, val_interactions, num_users):
     """
@@ -69,9 +70,18 @@ def train():
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training epochs"):
         model.train()
         epoch_loss = 0.0
-        # iterate over mini-batches
-        for batch_data in train_loader:
-            batch_users = batch_data.input_id # user indices in this batch
+
+        # wrap loader in tqdm
+        batch_iter = tqdm(
+            train_loader, 
+            desc=f"Epoch {epoch}/{num_epochs}", 
+            unit="batch",
+            leave=False
+        )
+        
+        # iterate over batches
+        for batch_data in batch_iter:
+            batch_users = batch_data.input_id.to(device) # user indices in this batch
 
             # randomly sample positive & negative items for these users
             users, pos, neg = sample_bpr_batch(
