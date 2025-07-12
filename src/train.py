@@ -1,6 +1,6 @@
 import torch
 from torch_geometric.nn.models import LightGCN
-from torch_geometric.loader import NeighborSampler
+from torch_geometric.loader import NeighborLoader
 from torch.amp import autocast, GradScaler
 import pandas as pd
 from src.model import bpr_loss, sample_bpr_batch
@@ -56,13 +56,12 @@ def train():
     scaler = GradScaler()
 
     # set up neighbor sampler
-    train_loader = NeighborSampler(
-        graph_data.edge_index,
-        sizes=fanout,
+    train_loader = NeighborLoader(
+        data=graph_data,
+        num_neighbors=fanout,
         batch_size=batch_size,
+        input_nodes=torch.arange(num_users, device=device),  # only sample users
         shuffle=True,
-        num_workers=4,
-        node_idx=torch.arange(num_users, device=device)
     )
 
     best_hr = 0.0
