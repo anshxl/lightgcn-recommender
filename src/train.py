@@ -4,26 +4,27 @@ from torch_geometric.loader import NeighborLoader
 from torch.amp import autocast, GradScaler
 import pandas as pd
 from src.model import bpr_loss, sample_bpr_batch
+from tqdm.auto import tqdm
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def evaluate_hr10(model, graph_data, val_interactions, mappings):
+def evaluate_hr10(model, embeddings, val_interactions, num_users):
     """
     Compute HR@10 over val_interactions (DataFrame with u_idx, s_idx).
     For each user, score all items, pick top-10, check hit.
     """
     model.eval()
     with torch.no_grad():
-        embeddings = model.get_embedding(graph_data.edge_index.to(device))
-        user_emb = embeddings[:mappings['num_users']]
-        item_emb = embeddings[mappings['num_users']:]
+        # embeddings = model.get_embedding(graph_data.edge_index.to(device))
+        user_emb = embeddings[:num_users]
+        item_emb = embeddings[num_users:]
         scores = user_emb @ item_emb.t()
 
     hits = 0
     total = 0
     for u, i in zip(val_interactions['u_idx'], val_interactions['s_idx']):
         top10 = torch.topk(scores[u], k=10).indices.tolist()
-        if (i - mappings['num_users']) in top10:
+        if (i - num_users) in top10:
             hits += 1
         total += 1
     return hits / total if total > 0 else 0.0
@@ -65,7 +66,7 @@ def train():
     )
 
     best_hr = 0.0
-    for epoch in range(1, num_epochs + 1):
+    for epoch in tqdm(range(1, num_epochs + 1), desc="Training epochs"):
         model.train()
         epoch_loss = 0.0
         # iterate over mini-batches
@@ -95,11 +96,13 @@ def train():
             scaler.update()
             epoch_loss += loss.item()
 
+        model_cpu = model.to('cpu')
+        graph_cpu = graph_data.to('cpu')
+        emb_full = model_cpu.get_embedding(graph_cpu.edge_index)
+        model.to(device)
+
         # validation
-        hr10 = evaluate_hr10(model, graph_data, val_df, {
-            'num_users': num_users,
-            'num_items': num_items
-        })
+        hr10 = evaluate_hr10(model, embeddings=emb_full, val_interactions=val_df, num_users=num_users)
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
 
         # checkpoint
