@@ -70,20 +70,22 @@ def train():
         epoch_loss = 0.0
         # iterate over mini-batches
         for batch_data in train_loader:
-            batch_users = batch_data.n_id[: batch_data.batch_size]  # user indices in this batch
-            edge_index_sub = batch_data.edge_index
+            batch_users = batch_data.input_id # user indices in this batch
 
             # randomly sample positive & negative items for these users
-            _, pos, neg = sample_bpr_batch(
+            users, pos, neg = sample_bpr_batch(
                 batch_users, 
                 user2items, 
                 num_users, 
                 num_items
             )
 
+            if users.numel() == 0:
+                continue
+
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
-                embeddings = model(edge_index_sub.to(device))
+                embeddings = model(batch_data.edge_index.to(device))
                 loss = bpr_loss(batch_users, pos.to(device), neg.to(device), embeddings)
             
             # backward pass
