@@ -2,7 +2,7 @@
 #SBATCH --job-name=rec-train
 #SBATCH --ntasks=4
 #SBATCH --gpus=v100:1
-#SBATCH --mem=10Gb
+#SBATCH --mem=15Gb
 #SBATCH --time=05:00:00
 #SBATCH --output=logs/train-%j.out
 #SBATCH --error=logs/train-%j.err
