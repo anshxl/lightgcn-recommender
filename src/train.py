@@ -6,8 +6,8 @@ import pandas as pd
 from src.model import bpr_loss, sample_bpr_batch
 from tqdm.auto import tqdm
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
+# Check if CUDA is available
+print(f"CUDA available: {torch.cuda.is_available()}")
 
 def evaluate_hr10(embeddings, val_interactions, num_users):
     """
@@ -37,32 +37,33 @@ def train():
     fanout = [10, 10, 10]  # neighbor sampling fanout
 
     # load data and mappings
-    graph_data_cpu = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
+    graph_data = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
+    edge_index_cpu = graph_data.edge_index.clone()  # clone to avoid modifying original
     maps = torch.load('data/mappings.pt', weights_only=False)
     num_users = len(maps['user2idx'])
     num_items = len(maps['item2idx'])
     val_df = pd.read_csv('data/val_triplets.txt', sep='\t', header=None, names=['user', 'song', 'playcount', 'u_idx', 's_idx'])
 
     # build user2items mapping
-    src, dst = graph_data_cpu.edge_index
+    src, dst = graph_data.edge_index
     user2items = {u: [] for u in range(num_users)}
     for u, i in zip(src.tolist(), dst.tolist()):
         if u < num_users:
             user2items[u].append(i)
 
     # Copy to GPU
-    graph_data_gpu = graph_data_cpu.to(device)
+    graph_data.to(device='cuda')
     # init model and optimizer
-    model_gpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device)
+    model_gpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device='cuda')
     model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).cpu()  # for CPU eval
     model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
     optimizer = torch.optim.Adam(model_gpu.parameters(), lr=lr)
     scaler = GradScaler()
 
     # set up neighbor sampler
-    user_idx = torch.arange(num_users, device=device)  # only sample users
+    user_idx = torch.arange(num_users, device='cuda')  # only sample users
     train_loader = NeighborLoader(
-        data=graph_data_gpu,
+        data=graph_data,
         num_neighbors=fanout,
         batch_size=batch_size,
         input_nodes=user_idx,  # only sample users
@@ -76,7 +77,7 @@ def train():
         
         # iterate over batches
         for batch_data in train_loader:
-            batch_users = batch_data.input_id.to(device) # user indices in this batch
+            batch_users = batch_data.input_id.to(device='cuda') # user indices in this batch
 
             # randomly sample positive & negative items for these users
             users, pos, neg = sample_bpr_batch(
@@ -91,8 +92,8 @@ def train():
 
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
-                embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device))
-                loss = bpr_loss(batch_users, pos.to(device), neg.to(device), embeddings)
+                embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device='cuda'))
+                loss = bpr_loss(batch_users, pos.to(device='cuda'), neg.to(device='cuda'), embeddings)
             
             # backward pass
             optimizer.zero_grad()
@@ -107,7 +108,7 @@ def train():
         model_cpu.eval()
         with torch.no_grad():
             # get full embeddings on CPU
-            emb_full = model_cpu.get_embedding(graph_data_cpu.edge_index)
+            emb_full = model_cpu.get_embedding(edge_index_cpu)
 
         # validation
         hr10 = evaluate_hr10(embeddings=emb_full, val_interactions=val_df, num_users=num_users)
