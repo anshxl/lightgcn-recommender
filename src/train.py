@@ -33,9 +33,9 @@ def train():
     lr = 0.01
 
     # load data and mappings
-    graph_data = torch.load('data/graph.pt')
+    graph_data = torch.load('data/graph.pt', weights_only=False)
     graph_data = graph_data.to(device)
-    maps = torch.load('data/mappings.pt')
+    maps = torch.load('data/mappings.pt', weights_only=False)
     num_users = len(maps['user2idx'])
     num_items = len(maps['item2idx'])
     val_df = pd.read_csv('data/val_triplets.txt', sep='\t', header=None, names=['user', 'song', 'playcount', 'u_idx', 's_idx'])
