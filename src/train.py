@@ -62,7 +62,8 @@ def train():
     num_users = len(maps['user2idx'])
     num_items = len(maps['item2idx'])
     val_df = pd.read_csv('data/val_triplets.txt', sep='\t', header=None, names=['user', 'song', 'playcount', 'u_idx', 's_idx'])
-
+    val_df = val_df.sample(n=10000, random_state=42).reset_index(drop=True)  # sample 10k for validation
+    
     # build user2items mapping
     src, dst = graph_data.edge_index
     user2items = {u: [] for u in range(num_users)}
