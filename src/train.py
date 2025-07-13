@@ -31,11 +31,13 @@ def evaluate_hr10(embeddings, val_df, num_users, num_items, user2items=None, num
         # sample negatives from items not seen by the user
         neg_candidates = list(all_items - set(user2items[u]) - {pos_i})
         negs = random.sample(neg_candidates, k=num_neg)
+        print(f"User {u}: Num positive items: {len(user2items[u])}, sampled negatives: {len(negs)}")
 
         # build candidate list and fetch embeddings
         candidates = [pos_i] + negs
         u_emb = user_emb[u].unsqueeze(0)  # [1, D]
         c_emb = item_emb[torch.tensor(candidates, dtype=torch.long)]   # [N, D]
+        print(f"User {u}: Positive item index: {pos_i}, Candidates: {candidates}")
 
         # score and rank
         scores = (u_emb @ c_emb.t()).squeeze(0) # [N]
@@ -58,27 +60,36 @@ def train():
     # load data and mappings
     graph_data = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
     edge_index_cpu = graph_data.edge_index.clone()  # clone to avoid modifying original
+    print(f"Graph data loaded with {graph_data.num_nodes} nodes and {graph_data.num_edges} edges.")
+
     maps = torch.load('data/mappings.pt', weights_only=False)
+    print(f"Mappings loaded: {len(maps['user2idx'])} users, {len(maps['item2idx'])} items.")
     num_users = len(maps['user2idx'])
     num_items = len(maps['item2idx'])
+
     val_df = pd.read_csv('data/val_triplets.txt', sep='\t', header=None, names=['user', 'song', 'playcount', 'u_idx', 's_idx'])
     val_df = val_df.sample(n=10000, random_state=42).reset_index(drop=True)  # sample 10k for validation
-    
+    print(f"Validation set loaded with {len(val_df)} samples.")
+
     # build user2items mapping
     src, dst = graph_data.edge_index
     user2items = {u: [] for u in range(num_users)}
     for u, i in zip(src.tolist(), dst.tolist()):
         if u < num_users:
             user2items[u].append(i)
+    print(f"User to items mapping created with {len(user2items)} users.")
 
     # Copy to GPU
     graph_data.to(device='cuda')
+    print("Graph data moved to GPU.")
+
     # init model and optimizer
     model_gpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device='cuda')
     model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).cpu()  # for CPU eval
     model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
     optimizer = torch.optim.Adam(model_gpu.parameters(), lr=lr)
     scaler = GradScaler()
+    print("Model initialized and moved to GPU.")
 
     # set up neighbor sampler
     user_idx = torch.arange(num_users, device='cuda')  # only sample users
@@ -119,7 +130,7 @@ def train():
             scaler.step(optimizer)
             scaler.update()
             epoch_loss += loss.item()
-
+        print("Moving to CPU for validation...")
         # empty cache
         torch.cuda.empty_cache()
         model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
@@ -127,6 +138,7 @@ def train():
         with torch.no_grad():
             # get full embeddings on CPU
             emb_full = model_cpu.get_embedding(edge_index_cpu)
+        print("Validation on CPU...")
 
         # validation
         hr10 = evaluate_hr10(
