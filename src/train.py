@@ -6,45 +6,58 @@ import pandas as pd
 from src.model import bpr_loss, sample_bpr_batch
 from tqdm.auto import tqdm
 import random
+from torch_sparse import SparseTensor
 
 # Check if CUDA is available
 print(f"CUDA available: {torch.cuda.is_available()}")
 
-def evaluate_hr10(embeddings, val_df, num_users, num_items, user2items=None, num_neg=1000):
+def evaluate_hr10(embeddings, val_df, num_users, num_items, rowptr, col, num_neg=1000):
     """
     embeddings:    [num_users + num_items, D] tensor on CPU
     val_df:        DataFrame with columns ['u_idx','s_idx'] (global item idx)
     num_users:     number of users
     num_items:     number of items
-    user2items:    dict u -> list of item-indices seen in training (global idx)
+    rowptr, col:   CSR representation of the full training graph (global node ids)
     num_neg:       number of negatives to sample per positive
     """
     user_emb = embeddings[:num_users]       # [U, D]
     item_emb = embeddings[num_users:]       # [I, D]
     hits, total = 0, 0
 
-    all_items = set(range(num_items))
+    # all_items = set(range(num_items))
 
     for u, global_i in zip(val_df['u_idx'], val_df['s_idx']):
         #shift to 0...I-1
         pos_i = global_i - num_users  # global index to local item index
-        # sample negatives from items not seen by the user
-        neg_candidates = list(all_items - set(user2items[u]) - {pos_i})
-        negs = random.sample(neg_candidates, k=num_neg)
-        print(f"User {u}: Num positive items: {len(user2items[u])}, sampled negatives: {len(negs)}")
 
-        # build candidate list and fetch embeddings
+        # pull this user's training neighbors from CSR
+        start, end = rowptr[u].item(), rowptr[u + 1].item()
+        neigh_global = col[start:end]     # a torch.LongTensor of global IDs
+
+        # extract only the item-neighbors, and make a set of local indices
+        #    (i.e. for each n >= num_users, local = n - num_users)
+        pos_set = set(
+            (neigh_global[neigh_global >= num_users] - num_users).tolist()
+        )
+
+        # sample negatives by rejection until we have num_neg
+        negs = []
+        while len(negs) < num_neg:
+            cand = random.randrange(num_items)
+            if cand not in pos_set and cand != pos_i:
+                negs.append(cand)
+
+        # build candidate list (positive first, then negatives)
         candidates = [pos_i] + negs
-        u_emb = user_emb[u].unsqueeze(0)  # [1, D]
-        c_emb = item_emb[torch.tensor(candidates, dtype=torch.long)]   # [N, D]
-        print(f"User {u}: Positive item index: {pos_i}, Candidates: {candidates}")
 
-        # score and rank
-        scores = (u_emb @ c_emb.t()).squeeze(0) # [N]
-        topk = torch.topk(scores, k=10).indices.tolist()  # get top-10 indices
+        # score the user against these candidates
+        u_vec = user_emb[u].unsqueeze(0)   # [1, D]
+        c_vecs = item_emb[torch.tensor(candidates, dtype=torch.long)]
+        scores = (u_vec @ c_vecs.t()).squeeze(0)   # [N+1]
 
-        # positive is at index 0 in candidates
-        if 0 in topk:
+        # check if the positive (index 0) is in top-10
+        top10 = torch.topk(scores, k=10).indices.tolist()
+        if 0 in top10:
             hits += 1
         total += 1
 
@@ -72,15 +85,23 @@ def train():
     print(f"Validation set loaded with {len(val_df)} samples.")
 
     # build user2items mapping
+    num_nodes = num_users + num_items
     src, dst = graph_data.edge_index
-    user2items = {u: [] for u in range(num_users)}
-    for u, i in zip(src.tolist(), dst.tolist()):
-        if u < num_users:
-            user2items[u].append(i)
-    print(f"User to items mapping created with {len(user2items)} users.")
+
+    # row=src, col=dst means: from src-node -> dst-node edges
+    adj_t = SparseTensor(row=src, col=dst, sparse_sizes=(num_nodes, num_nodes))
+
+    # extract the CSR “indptr” and “indices” arrays:
+    rowptr, col = adj_t.csr()  
+    #   rowptr: LongTensor of shape [num_nodes+1]
+    #   col:    LongTensor of shape [num_edges]
+
+    # we no longer need the original edge_index in Python list form:
+    del graph_data.edge_index
+    print("Adjacency matrix converted to CSR format.")
 
     # Copy to GPU
-    graph_data.to(device='cuda')
+    graph_data = graph_data.to(device='cuda')
     print("Graph data moved to GPU.")
 
     # init model and optimizer
@@ -108,17 +129,20 @@ def train():
         
         # iterate over batches
         for batch_data in train_loader:
-            batch_users = batch_data.input_id.to(device='cuda') # user indices in this batch
+            batch_users = batch_data.input_id # user indices in this batch
 
             # randomly sample positive & negative items for these users
             users, pos, neg = sample_bpr_batch(
-                batch_users, 
-                user2items, 
-                num_users, 
-                num_items
+                batch_users,  # move to CPU for sampling
+                rowptr, col,
+                num_users, num_items,
+                num_neg=1
             )
             if users.numel() == 0:
                 continue
+
+            # move batch data to GPU
+            batch_users = batch_users.to(device='cuda')
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
                 embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device='cuda'))
@@ -146,7 +170,8 @@ def train():
             val_df=val_df, 
             num_users=num_users, 
             num_items=num_items, 
-            user2items=user2items, 
+            rowptr=rowptr,
+            col=col, 
             num_neg=1000)
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
 

@@ -38,36 +38,55 @@ def bpr_loss(users, pos_items, neg_items, embeddings):
     return loss
 
 # BPR sampling
-def sample_bpr_batch(batch_users: torch.Tensor,
-                     user2items: dict,
-                     num_users: int,
-                     num_items: int):
-    """
-    batch_users: LongTensor of shape [B] with global user indices
-    user2items: dict mapping each user (0..num_users-1) to list of item indices
-    num_users, num_items: ints
-    Returns: (users, pos_items, neg_items) LongTensors of length ≤ B
-    """
-    users, pos_items, neg_items = [], [], []
+def sample_bpr_batch(    
+    users,       # CUDA LongTensor of user indices [B]
+    rowptr,      # CPU LongTensor CSR indptr [num_nodes+1]
+    col,         # CPU LongTensor CSR indices [num_edges]
+    num_users,
+    num_items,
+    num_neg=1):
 
-    for u in batch_users.tolist():
-        pos_cands = user2items.get(u, [])
-        if not pos_cands:
+    out_u, out_pos, out_neg = [], [], []
+    for u in users.tolist():
+        # 1) grab this user's global neighbors
+        start, end = rowptr[u].item(), rowptr[u+1].item()
+        neigh = col[start:end]
+        # only item‐neighbors:
+        pos_tensor = neigh[neigh >= num_users]
+        if pos_tensor.numel() == 0:
             continue
 
-        pos_i = random.choice(pos_cands)
-        # sample a neg item outside user's positives
-        neg_i = random.randrange(num_users, num_users + num_items)
-        while neg_i in pos_cands:
-            neg_i = random.randrange(num_users, num_users + num_items)
+        # build a small Python set of local item‐indices for quick membership tests
+        pos_set = set((pos_tensor - num_users).tolist())
 
-        users.append(u)
-        pos_items.append(pos_i)
-        neg_items.append(neg_i)
+        # now sample num_neg times
+        for _ in range(num_neg):
+            # pick a positive at random
+            pos_local = random.choice(list(pos_set))
+            pos_global = pos_local + num_users
 
-    device = batch_users.device
+            # rejection‐sample a negative (local index)
+            neg_local = random.randrange(num_items)
+            while neg_local in pos_set:
+                neg_local = random.randrange(num_items)
+            neg_global = neg_local + num_users
+
+            # record one triple
+            out_u.append(u)
+            out_pos.append(pos_global)
+            out_neg.append(neg_global)
+
+    if not out_u:
+        # no valid users in this batch
+        return (
+            torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+        )
+
+    # stack and send back to CUDA
     return (
-        torch.tensor(users, dtype=torch.long, device=device),
-        torch.tensor(pos_items, dtype=torch.long, device=device),
-        torch.tensor(neg_items, dtype=torch.long, device=device),
+        torch.tensor(out_u, dtype=torch.long),
+        torch.tensor(out_pos, dtype=torch.long),
+        torch.tensor(out_neg, dtype=torch.long),
     )
