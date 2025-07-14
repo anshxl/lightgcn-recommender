@@ -92,7 +92,7 @@ def train():
     adj_t = SparseTensor(row=src, col=dst, sparse_sizes=(num_nodes, num_nodes))
 
     # extract the CSR “indptr” and “indices” arrays:
-    rowptr, col = adj_t.csr()  
+    rowptr, col, _ = adj_t.csr()  
     #   rowptr: LongTensor of shape [num_nodes+1]
     #   col:    LongTensor of shape [num_edges]
 
@@ -138,6 +138,7 @@ def train():
                 num_users, num_items,
                 num_neg=1
             )
+            print(f"Batch size: {len(batch_users)}, Positives: {len(pos)}, Negatives: {len(neg)}")
             if users.numel() == 0:
                 continue
 
@@ -147,13 +148,15 @@ def train():
                 # forward pass
                 embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device='cuda'))
                 loss = bpr_loss(batch_users, pos.to(device='cuda'), neg.to(device='cuda'), embeddings)
-            
+            print("Forward pass complete, loss computed.")
             # backward pass
             optimizer.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             epoch_loss += loss.item()
+            print("Backward pass complete, optimizer step done.")
+
         print("Moving to CPU for validation...")
         # empty cache
         torch.cuda.empty_cache()
