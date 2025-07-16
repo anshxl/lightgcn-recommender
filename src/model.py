@@ -38,53 +38,52 @@ def bpr_loss(users, pos_items, neg_items, embeddings):
     return loss
 
 # BPR sampling
-def sample_bpr_batch(    
-    users,       # CUDA LongTensor of user indices [B]
-    rowptr,      # CPU LongTensor CSR indptr [num_nodes+1]
-    col,         # CPU LongTensor CSR indices [num_edges]
+def sample_bpr_batch(
+    users,      # CPU LongTensor of user indices [B]
+    rowptr,     # CPU LongTensor CSR indptr [num_nodes+1]
+    col,        # CPU LongTensor CSR indices [num_edges]
     num_users,
     num_items,
-    num_neg=1):
-
+    num_neg=1
+):
     out_u, out_pos, out_neg = [], [], []
+
     for u in users.tolist():
-        # 1) grab this user's global neighbors
+        # 1) slice out this user's global neighbors
         start, end = rowptr[u].item(), rowptr[u+1].item()
-        neigh = col[start:end]
-        # only item‐neighbors:
-        pos_tensor = neigh[neigh >= num_users]
+        neigh = col[start:end]                  # a small 1-D tensor
+
+        # 2) keep only item-neighbors and shift to local [0..num_items)
+        pos_tensor = neigh[neigh >= num_users] - num_users
         if pos_tensor.numel() == 0:
             continue
 
-        # build a small Python set of local item‐indices for quick membership tests
-        pos_set = set((pos_tensor - num_users).tolist())
-
-        # now sample num_neg times
+        # 3) for each negative we want:
         for _ in range(num_neg):
-            # pick a positive at random
-            pos_local = random.choice(list(pos_set))
+            # — sample a positive by random index into pos_tensor
+            idx = torch.randint(0, pos_tensor.size(0), (1,), dtype=torch.long).item()
+            pos_local = pos_tensor[idx].item()
             pos_global = pos_local + num_users
 
-            # rejection‐sample a negative (local index)
+            # — sample a negative by rejection, checking via tensor compare
             neg_local = random.randrange(num_items)
-            while neg_local in pos_set:
+            # membership test via tensor equality and any()
+            while (pos_tensor == neg_local).any().item():
                 neg_local = random.randrange(num_items)
             neg_global = neg_local + num_users
 
-            # record one triple
+            # record the triple
             out_u.append(u)
             out_pos.append(pos_global)
             out_neg.append(neg_global)
 
     if not out_u:
-        # no valid users in this batch
         return (
             torch.empty(0, dtype=torch.long),
             torch.empty(0, dtype=torch.long),
             torch.empty(0, dtype=torch.long),
         )
 
-    # stack and send back to CUDA
     return (
         torch.tensor(out_u, dtype=torch.long),
         torch.tensor(out_pos, dtype=torch.long),
