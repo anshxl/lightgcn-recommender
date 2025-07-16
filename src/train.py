@@ -73,29 +73,27 @@ def train():
     # load data and mappings
     graph_data = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
     edge_index_cpu = graph_data.edge_index.clone()  # clone to avoid modifying original
-    print(f"Graph data loaded with {graph_data.num_nodes} nodes and {graph_data.num_edges} edges.")
+    print(f"Graph: {graph_data.num_nodes} nodes, {graph_data.num_edges} edges")
 
     maps = torch.load('data/mappings.pt', weights_only=False)
-    print(f"Mappings loaded: {len(maps['user2idx'])} users, {len(maps['item2idx'])} items.")
     num_users = len(maps['user2idx'])
     num_items = len(maps['item2idx'])
+    print(f"Mappings: {num_users} users, {num_items} items")
 
-    val_df = pd.read_csv('data/val_triplets.txt', sep='\t', header=None, names=['user', 'song', 'playcount', 'u_idx', 's_idx'])
-    val_df = val_df.sample(n=10000, random_state=42).reset_index(drop=True)  # sample 10k for validation
-    print(f"Validation set loaded with {len(val_df)} samples.")
+    val_df = pd.read_csv(
+        'data/val_triplets.txt', 
+        sep='\t', 
+        header=None, 
+        names=['user', 'song', 'playcount', 'u_idx', 's_idx']
+        ).sample(n=10000, random_state=42).reset_index(drop=True)
+    print(f"Validation: {len(val_df)} samples")
 
-    # build user2items mapping
+    # build CSR on CPU
     num_nodes = num_users + num_items
     src, dst = graph_data.edge_index
-
-    # row=src, col=dst means: from src-node -> dst-node edges
     adj_t = SparseTensor(row=src, col=dst, sparse_sizes=(num_nodes, num_nodes))
-
-    # extract the CSR “indptr” and “indices” arrays:
-    rowptr, col, _ = adj_t.csr()  
-    #   rowptr: LongTensor of shape [num_nodes+1]
-    #   col:    LongTensor of shape [num_edges]
-    print("Adjacency matrix converted to CSR format.")
+    rowptr, col_tensor, _ = adj_t.csr()
+    print("CSR built: rowptr", rowptr.shape, "col", col_tensor.shape)
 
     # Copy to GPU
     graph_data = graph_data.to(device='cuda')
@@ -107,7 +105,7 @@ def train():
     model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
     optimizer = torch.optim.Adam(model_gpu.parameters(), lr=lr)
     scaler = GradScaler()
-    print("Model initialized and moved to GPU.")
+    print("Model initialized.")
 
     # set up neighbor sampler
     user_idx = torch.arange(num_users, device='cuda')  # only sample users
@@ -118,7 +116,8 @@ def train():
         input_nodes=user_idx,  # only sample users
         shuffle=True,
     )
-    print("NeighborLoader initialized with fanout:", fanout)
+    print("NeighborLoader ready")
+
     best_hr = 0.0
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training epochs"):
         model_gpu.train()
@@ -126,25 +125,25 @@ def train():
         
         # iterate over batches
         for batch_data in train_loader:
-            batch_users = batch_data.input_id # user indices in this batch
-
-            # randomly sample positive & negative items for these users
-            users, pos, neg = sample_bpr_batch(
-                batch_users,  # move to CPU for sampling
-                rowptr, col,
-                num_users, num_items,
-                num_neg=1
+            # move batch data to CPU for sampling
+            batch_users_cpu = batch_data.input_id.cpu()
+            users_cpu, pos_cpu, neg_cpu = sample_bpr_batch(
+                batch_users_cpu, rowptr, col_tensor,
+                num_users, num_items, num_neg=1
             )
-            print(f"Batch size: {len(batch_users)}, Positives: {len(pos)}, Negatives: {len(neg)}")
-            if users.numel() == 0:
+            if users_cpu.numel() == 0:
                 continue
+            print(f"Batch size: {batch_users_cpu.shape[0]}, sampled users: {users_cpu.shape[0]}")
+            # move tiny samplers to CUDA
+            users = users_cpu.to('cuda')
+            pos   = pos_cpu.to('cuda')
+            neg   = neg_cpu.to('cuda')
+            print("Batch data moved to GPU.")
 
-            # move batch data to GPU
-            batch_users = batch_users.to(device='cuda')
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
-                embeddings = model_gpu.get_embedding(batch_data.edge_index.to(device='cuda'))
-                loss = bpr_loss(batch_users, pos.to(device='cuda'), neg.to(device='cuda'), embeddings)
+                embeddings = model_gpu.get_embedding(batch_data.edge_index)
+                loss = bpr_loss(users, pos.to(device='cuda'), neg.to(device='cuda'), embeddings)
             print("Forward pass complete, loss computed.")
             # backward pass
             optimizer.zero_grad()
@@ -154,15 +153,12 @@ def train():
             epoch_loss += loss.item()
             print("Backward pass complete, optimizer step done.")
 
-        print("Moving to CPU for validation...")
-        # empty cache
+        print("Syncing to CPU for eval")
         torch.cuda.empty_cache()
         model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
         model_cpu.eval()
         with torch.no_grad():
-            # get full embeddings on CPU
             emb_full = model_cpu.get_embedding(edge_index_cpu)
-        print("Validation on CPU...")
 
         # validation
         hr10 = evaluate_hr10(
@@ -171,7 +167,7 @@ def train():
             num_users=num_users, 
             num_items=num_items, 
             rowptr=rowptr,
-            col=col, 
+            col=col_tensor, 
             num_neg=1000)
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
 
