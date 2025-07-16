@@ -118,7 +118,7 @@ def train():
         input_nodes=user_idx,  # only sample users
         shuffle=True,
     )
-
+    print("NeighborLoader initialized with fanout:", fanout)
     best_hr = 0.0
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training epochs"):
         model_gpu.train()
