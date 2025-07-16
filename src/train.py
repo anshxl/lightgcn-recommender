@@ -95,9 +95,6 @@ def train():
     rowptr, col, _ = adj_t.csr()  
     #   rowptr: LongTensor of shape [num_nodes+1]
     #   col:    LongTensor of shape [num_edges]
-
-    # we no longer need the original edge_index in Python list form:
-    del graph_data.edge_index
     print("Adjacency matrix converted to CSR format.")
 
     # Copy to GPU
