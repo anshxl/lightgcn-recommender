@@ -1,4 +1,6 @@
 import torch
+import glob
+from torch.utils.data import IterableDataset
 import torch.nn.functional as F
 from torch_geometric.nn.models import LightGCN as _LightGCN
 import random
@@ -89,3 +91,68 @@ def sample_bpr_batch(
         torch.tensor(out_pos, dtype=torch.long),
         torch.tensor(out_neg, dtype=torch.long),
     )
+
+# BPR Loader Class
+class BPRChunkDataset(IterableDataset):
+    def __init__(self, chunk_dir: str):
+        self.files = sorted(glob.glob(f"{chunk_dir}/*.pt"))
+
+    def __iter__(self):
+        for path in self.files:
+            data = torch.load(path)
+            users, pos, neg = data['users'], data['pos'], data['neg']
+            # yield triple-by-triple
+            for u, p, n in zip(users, pos, neg):
+                yield u.item(), p.item(), n.item()
+
+def evaluate_hr10(embeddings, val_df, num_users, num_items, rowptr, col, num_neg=1000):
+    """
+    embeddings:    [num_users + num_items, D] tensor on CPU
+    val_df:        DataFrame with columns ['u_idx','s_idx'] (global item idx)
+    num_users:     number of users
+    num_items:     number of items
+    rowptr, col:   CSR representation of the full training graph (global node ids)
+    num_neg:       number of negatives to sample per positive
+    """
+    user_emb = embeddings[:num_users]       # [U, D]
+    item_emb = embeddings[num_users:]       # [I, D]
+    hits, total = 0, 0
+
+    # all_items = set(range(num_items))
+
+    for u, global_i in zip(val_df['u_idx'], val_df['s_idx']):
+        #shift to 0...I-1
+        pos_i = global_i - num_users  # global index to local item index
+
+        # pull this user's training neighbors from CSR
+        start, end = rowptr[u].item(), rowptr[u + 1].item()
+        neigh_global = col[start:end]     # a torch.LongTensor of global IDs
+
+        # extract only the item-neighbors, and make a set of local indices
+        #    (i.e. for each n >= num_users, local = n - num_users)
+        pos_set = set(
+            (neigh_global[neigh_global >= num_users] - num_users).tolist()
+        )
+
+        # sample negatives by rejection until we have num_neg
+        negs = []
+        while len(negs) < num_neg:
+            cand = random.randrange(num_items)
+            if cand not in pos_set and cand != pos_i:
+                negs.append(cand)
+
+        # build candidate list (positive first, then negatives)
+        candidates = [pos_i] + negs
+
+        # score the user against these candidates
+        u_vec = user_emb[u].unsqueeze(0)   # [1, D]
+        c_vecs = item_emb[torch.tensor(candidates, dtype=torch.long)]
+        scores = (u_vec @ c_vecs.t()).squeeze(0)   # [N+1]
+
+        # check if the positive (index 0) is in top-10
+        top10 = torch.topk(scores, k=10).indices.tolist()
+        if 0 in top10:
+            hits += 1
+        total += 1
+
+    return hits / total if total > 0 else 0.0
