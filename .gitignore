@@ -14,3 +14,7 @@ __pycache__/
 # Large files
 *.pt
 train_triplets.txt.zip
+bpr_triples_chunks/
+
+# mprof
+*.png
