@@ -25,8 +25,8 @@ def log_mem(stage):
 # 1) Load graph & mappings on CPU
 log_mem('start')
 print("Loading graph and mappings...")
-graph_data = torch.load(GRAPH_PATH, map_location='cpu')
-maps       = torch.load(MAP_PATH, map_location='cpu')
+graph_data = torch.load(GRAPH_PATH, weights_only=False, map_location='cpu')
+maps       = torch.load(MAP_PATH, weights_only=False, map_location='cpu')
 num_users  = len(maps['user2idx'])
 num_items  = len(maps['item2idx'])
 num_nodes  = num_users + num_items
