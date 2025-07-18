@@ -1,0 +1,17 @@
+#!/bin/bash --login
+#SBATCH --job-name=precompute-bpr
+#SBATCH --ntasks=4
+#SBATCH --mem=15Gb
+#SBATCH --time=05:00:00
+#SBATCH --output=logs/precompute-%j.out
+#SBATCH --error=logs/precompute-%j.err
+
+# Load modules
+module purge
+module load Miniforge3
+module load CUDA/12.4.0
+
+# Activate env
+conda activate pytorch
+
+python -m src.precompute_bpr
