@@ -67,11 +67,10 @@ def train():
     print("NeighborLoader ready")
 
     # setup BPR loader
-    bpr_dataset = BPRChunkDataset('data/bpr_triples_chunks')
+    bpr_dataset = BPRChunkDataset('data/bpr_triples_chunks', shuffle=True)
     bpr_loader = DataLoader(
         bpr_dataset, 
         batch_size=batch_size, 
-        shuffle=True, 
         num_workers=4,
         pin_memory=True
     )

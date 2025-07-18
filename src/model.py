@@ -94,16 +94,25 @@ def sample_bpr_batch(
 
 # BPR Loader Class
 class BPRChunkDataset(IterableDataset):
-    def __init__(self, chunk_dir: str):
+    def __init__(self, chunk_dir: str, shuffle: bool = False):
         self.files = sorted(glob.glob(f"{chunk_dir}/*.pt"))
+        self.shuffle = shuffle
 
     def __iter__(self):
+        files = self.files.copy()
+        if self.shuffle:
+            random.shuffle(files)
         for path in self.files:
             data = torch.load(path)
             users, pos, neg = data['users'], data['pos'], data['neg']
+            if self.shuffle:
+                idxs = list(range(len(users)))
+                random.shuffle(idxs)
+            else:
+                idxs = range(len(users))
             # yield triple-by-triple
-            for u, p, n in zip(users, pos, neg):
-                yield u.item(), p.item(), n.item()
+            for i in idxs:
+                yield users[i].item(), pos[i].item(), neg[i].item()
 
 def evaluate_hr10(embeddings, val_df, num_users, num_items, rowptr, col, num_neg=1000):
     """
