@@ -66,9 +66,9 @@ def evaluate_hr10(embeddings, val_df, num_users, num_items, rowptr, col, num_neg
 def train():
     # hyperparams
     num_epochs = 50
-    batch_size = 1024
+    batch_size = 256
     lr = 0.01
-    fanout = [10, 10, 10]  # neighbor sampling fanout
+    fanout = [5, 5, 5]  # neighbor sampling fanout
 
     # load data and mappings
     graph_data = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
