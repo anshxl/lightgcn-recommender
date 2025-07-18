@@ -91,22 +91,22 @@ def train():
             users = users.to('cuda', non_blocking=True)
             pos = pos.to('cuda', non_blocking=True)
             neg = neg.to('cuda', non_blocking=True)
-            print(f"Processing batch: users={users.shape}, pos={pos.shape}, neg={neg.shape}")
+            print(f"Processing batch: users={users.shape}, pos={pos.shape}, neg={neg.shape}", flush=True)
 
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
                 embeddings = model_gpu.get_embedding(batch_data.edge_index)
                 loss = bpr_loss(users, pos, neg, embeddings)
-            print("Forward pass complete, loss computed.")
+            print("Forward pass complete, loss computed.", flush=True)
             # backward pass
             optimizer.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             epoch_loss += loss.item()
-            print("Backward pass complete, optimizer step done.")
+            print("Backward pass complete, optimizer step done.", flush=True)
 
-        print("Syncing to CPU for eval")
+        print("Syncing to CPU for eval", flush=True)
         torch.cuda.empty_cache()
         model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
         model_cpu.eval()
@@ -122,7 +122,7 @@ def train():
             rowptr=rowptr,
             col=col_tensor, 
             num_neg=1000)
-        print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}")
+        print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}", flush=True)
 
         # checkpoint
         if hr10 > best_hr:
