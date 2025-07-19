@@ -20,7 +20,7 @@ def train():
 
     # load data and mappings
     graph_data = torch.load('data/graph.pt', weights_only=False, map_location='cpu')
-    edge_index_cpu = graph_data.edge_index.clone()  # clone to avoid modifying original
+    # edge_index_cpu = graph_data.edge_index.clone()  # clone to avoid modifying original
     print(f"Graph: {graph_data.num_nodes} nodes, {graph_data.num_edges} edges")
 
     maps = torch.load('data/mappings.pt', weights_only=False)
@@ -122,14 +122,19 @@ def train():
         # FAISS-based evaluation
         print("Syncing to CPU for eval", flush=True)
         torch.cuda.empty_cache()
-        model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
+        model_gpu.eval()
+        with torch.no_grad():
+            emb_full = model_gpu.get_embedding(graph_data.edge_index)
+        emb_full = emb_full.cpu()  # move embeddings to CPU for FAISS
+        # Slice embeddings into numpy arrays (float32 for FAISS)
+        user_emb = emb_full[:num_users].numpy().astype('float32')
+        item_emb = emb_full[num_users:].numpy().astype('float32')
+        # model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
         hr10 = evaluate_faiss(
-            model_cpu, 
+            model_gpu, 
             val_loader, 
-            num_users, 
-            num_items, 
-            device='cpu',
-            chunk_size=100_000,
+            item_emb=item_emb, 
+            user_emb=user_emb, 
             top_k=10
         )
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}", flush=True)

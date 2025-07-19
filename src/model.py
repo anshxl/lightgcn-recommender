@@ -183,57 +183,47 @@ def compute_hits(preds: np.ndarray, true_items: np.ndarray):
     hits_per_user = (preds == true_items[:, None]).any(axis=1)
     return int(hits_per_user.sum())
 
-def evaluate_faiss(model, val_loader, num_users, num_items, device='cpu', 
-                   chunk_size=100_000, M=32, ef_construction=200, ef_search=50, top_k=10):
+def evaluate_faiss(
+    user_emb: np.ndarray,       # [U, D] float32
+    item_emb: np.ndarray,       # [I, D] float32
+    val_loader,                 # yields (user_ids_local, true_item_globals)
+    num_users: int,
+    top_k: int = 10,
+    M: int = 32,
+    ef_construction: int = 200,
+    ef_search: int = 50,
+) -> float:
     """
-    Hit Rate@topk via FAISS HNSW (no full-graph embedding).
-    
-    Args:
-      model: LightGCN on CPU, with .get_embedding_for_nodes(node_ids) → [batch, D]
-      val_loader: DataLoader yielding (user_ids, true_items)
-      num_users, num_items: graph sizes
-      device: e.g. 'cpu'
-      chunk_size: nodes per embedding batch
-      M: HNSW connectivity
-      ef_construction, ef_search: build/query params
-      topk: recommendations per user
-    Returns:
-      float HR@topk
+    Compute HR@top_k by indexing directly into precomputed embeddings.
+
+    user_emb:   all user vectors (numpy, float32)
+    item_emb:   all item vectors (numpy, float32)
+    val_loader: yields (user_ids_local, true_item_global)
     """
-    model.eval()
-    D = model.embedding_dim
+    # 1) Normalize if you want cosine (optional)
+    # faiss.normalize_L2(user_emb)
+    # faiss.normalize_L2(item_emb)
 
-    # Compute item embeddings in chunks
-    all_item_ids = torch.arange(num_users, num_users + num_items, device=device)
-    item_embeddings = []
-    for chunk in torch.split(all_item_ids, chunk_size):
-        with torch.no_grad():
-            emb = model.get_embedding(chunk)
-        item_embeddings.append(emb.numpy().astype('float32'))
-    item_embeddings = np.vstack(item_embeddings)
+    d = item_emb.shape[1]
+    # 2) Build HNSW index on items
+    index = faiss.IndexHNSWFlat(d, M, faiss.METRIC_INNER_PRODUCT)
+    index.hnsw.efConstruction = ef_construction
+    index.hnsw.efSearch       = ef_search
+    index.add(item_emb)   # only ~100 MB of RAM
 
-    # build FAISS index
-    index = faiss.IndexHNSWFlat(D, 32)
-    try:
-        index.hnsw.efConstruction = ef_construction
-        index.hnsw.efSearch       = ef_search
-    except AttributeError:
-        print("Setting efConstruction and efSearch via ParameterSpace")
-        from faiss import ParameterSpace
-        ps = ParameterSpace()
-        ps.set_index_parameter(index, "efConstruction", str(ef_construction))
-        ps.set_index_parameter(index, "efSearch",       str(ef_search))
-    index.add(item_embeddings)
-
-    # query per user batch and compute hits
     hits, total = 0, 0
     for user_ids, true_items in val_loader:
-        with torch.no_grad():
-            u_emb = model.get_embedding(user_ids)
-        u_emb = u_emb.numpy().astype('float32')
-    
-        _, I_pred = index.search(u_emb, top_k)  # [B, top_k]
-        hits += compute_hits(I_pred, true_items.numpy())
-        total += user_ids.size(0)
+        # user_ids: a CPU LongTensor of local user indices [B]
+        ue = user_emb[user_ids.numpy(), :]      # [B, D] float32
+
+        # 3) FAISS search returns local item‐indices [B, top_k]
+        _, I_pred = index.search(ue, top_k)
+
+        # 4) Convert true globals to locals, then count hits
+        true_locals = (true_items.numpy() - num_users).astype(int)
+        # vectorized hit‐count
+        # (for each row, check if true_local is among I_pred[row])
+        hits += int((I_pred == true_locals[:, None]).any(axis=1).sum())
+        total += ue.shape[0]
 
     return hits / total if total > 0 else 0.0
