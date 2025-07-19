@@ -110,14 +110,14 @@ def train():
                 # forward pass
                 embeddings = model_gpu.get_embedding(batch_data.edge_index)
                 loss = bpr_loss(users, pos, neg, embeddings)
-            print("Forward pass complete, loss computed.", flush=True)
+            # print("Forward pass complete, loss computed.", flush=True)
             # backward pass
             optimizer.zero_grad()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             epoch_loss += loss.item()
-            print("Backward pass complete, optimizer step done.", flush=True)
+            # print("Backward pass complete, optimizer step done.", flush=True)
 
         # FAISS-based evaluation
         print("Syncing to CPU for eval", flush=True)
@@ -130,7 +130,7 @@ def train():
             num_items, 
             device='cpu',
             chunk_size=100_000,
-            k=10
+            top_k=10
         )
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}", flush=True)
 
