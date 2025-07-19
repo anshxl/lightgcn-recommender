@@ -53,7 +53,7 @@ class BPRChunkDataset(IterableDataset):
         files = self.files.copy()
         if self.shuffle:
             random.shuffle(files)
-        for path in self.files:
+        for path in files:
             data = torch.load(path)
             users, pos, neg = data['users'], data['pos'], data['neg']
             if self.shuffle:

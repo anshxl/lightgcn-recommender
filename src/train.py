@@ -129,10 +129,10 @@ def train():
         item_emb = emb_full[num_users:].numpy().astype('float32')
         # model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
         hr10 = evaluate_faiss(
-            model_gpu, 
-            val_loader, 
-            item_emb=item_emb, 
-            user_emb=user_emb, 
+            user_emb=user_emb,
+            item_emb=item_emb,
+            val_loader=val_loader,
+            num_users=num_users,
             top_k=10
         )
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}", flush=True)
