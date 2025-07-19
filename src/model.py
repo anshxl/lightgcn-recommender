@@ -147,7 +147,7 @@ def infer_embeddings(model, edge_index, num_nodes, emb_dim,
     model.eval()
     with torch.no_grad():
         # 4) Stream over node batches
-        for batch_size_, n_id, adjs in sampler():
+        for batch_size_, n_id, adjs in sampler:
             # n_id: the global node IDs in this batch
             h = x0[n_id]   # gather initial features for this batch
 
