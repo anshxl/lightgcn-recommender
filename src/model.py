@@ -4,6 +4,8 @@ from torch.utils.data import IterableDataset
 import torch.nn.functional as F
 from torch_geometric.nn.models import LightGCN as _LightGCN
 import random
+import faiss
+import numpy as np
 
 # LightGCN with dropout
 class LGCNWithDropout(torch.nn.Module):
@@ -12,6 +14,7 @@ class LGCNWithDropout(torch.nn.Module):
         self.lgcn = _LightGCN(num_nodes, embedding_dim, num_layers)
         
         # Simple embedding lookup for all nodes
+        self.embedding_dim = embedding_dim
         self.embedding = torch.nn.Embedding(num_nodes, embedding_dim)
         torch.nn.init.xavier_uniform_(self.embedding.weight)
 
@@ -163,5 +166,74 @@ def evaluate_hr10(embeddings, val_df, num_users, num_items, rowptr, col, num_neg
         if 0 in top10:
             hits += 1
         total += 1
+
+    return hits / total if total > 0 else 0.0
+
+def compute_hits(preds: np.ndarray, true_items: np.ndarray):
+    """
+    Count how many true_items appear in their corresponding preds rows.
+
+    Args:
+      preds: array of shape (batch_size, k) with item indices.
+      true_items: array of shape (batch_size,) with the ground-truth item.
+    Returns:
+      The number of hits in this batch.
+    """
+    # For each row i, check if true_items[i] is in preds[i]
+    hits_per_user = (preds == true_items[:, None]).any(axis=1)
+    return int(hits_per_user.sum())
+
+def evaluate_faiss(model, val_loader, num_users, num_items, device='cpu', 
+                   chunk_size=100_000, M=32, ef_construction=200, ef_search=50, top_k=10):
+    """
+    Hit Rate@topk via FAISS HNSW (no full-graph embedding).
+    
+    Args:
+      model: LightGCN on CPU, with .get_embedding_for_nodes(node_ids) → [batch, D]
+      val_loader: DataLoader yielding (user_ids, true_items)
+      num_users, num_items: graph sizes
+      device: e.g. 'cpu'
+      chunk_size: nodes per embedding batch
+      M: HNSW connectivity
+      ef_construction, ef_search: build/query params
+      topk: recommendations per user
+    Returns:
+      float HR@topk
+    """
+    model.eval()
+    D = model.embedding_dim
+
+    # Compute item embeddings in chunks
+    all_item_ids = torch.arange(num_users, num_users + num_items, device=device)
+    item_embeddings = []
+    for chunk in torch.split(all_item_ids, chunk_size):
+        with torch.no_grad():
+            emb = model.get_embedding(chunk)
+        item_embeddings.append(emb.numpy().astype('float32'))
+    item_embeddings = np.vstack(item_embeddings)
+
+    # build FAISS index
+    index = faiss.IndexHNSWFlat(D, 32)
+    try:
+        index.hnsw.efConstruction = ef_construction
+        index.hnsw.efSearch       = ef_search
+    except AttributeError:
+        print("Setting efConstruction and efSearch via ParameterSpace")
+        from faiss import ParameterSpace
+        ps = ParameterSpace()
+        ps.set_index_parameter(index, "efConstruction", str(ef_construction))
+        ps.set_index_parameter(index, "efSearch",       str(ef_search))
+    index.add(item_embeddings)
+
+    # query per user batch and compute hits
+    hits, total = 0, 0
+    for user_ids, true_items in val_loader:
+        with torch.no_grad():
+            u_emb = model.get_embedding(user_ids)
+        u_emb = u_emb.numpy().astype('float32')
+    
+        _, I_pred = index.search(u_emb, top_k)  # [B, top_k]
+        hits += compute_hits(I_pred, true_items.numpy())
+        total += user_ids.size(0)
 
     return hits / total if total > 0 else 0.0

@@ -2,9 +2,9 @@ import torch
 from torch_geometric.nn.models import LightGCN
 from torch_geometric.loader import NeighborLoader
 from torch.amp import autocast, GradScaler
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
-from src.model import bpr_loss, BPRChunkDataset, evaluate_hr10
+from src.model import bpr_loss, BPRChunkDataset, evaluate_faiss
 from tqdm.auto import tqdm
 from torch_sparse import SparseTensor
 
@@ -35,6 +35,9 @@ def train():
         names=['user', 'song', 'playcount', 'u_idx', 's_idx']
         ).sample(n=10000, random_state=42).reset_index(drop=True)
     print(f"Validation: {len(val_df)} samples")
+    user_idx = torch.from_numpy(val_df['u_idx'].values).long()
+    item_idx = torch.from_numpy(val_df['s_idx'].values).long()
+    val_dataset = TensorDataset(user_idx, item_idx)
 
     # build CSR on CPU
     num_nodes = num_users + num_items
@@ -76,6 +79,16 @@ def train():
     )
     print("BPR dataset and loader ready.")
 
+    # setup val loader
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=4096,
+        shuffle=False,
+        num_workers=4,
+    )
+    print("Validation DataLoader ready.")
+
+    # prepare for training
     best_hr = 0.0
     for epoch in tqdm(range(1, num_epochs + 1), desc="Training epochs"):
         model_gpu.train()
@@ -91,7 +104,7 @@ def train():
             users = users.to('cuda', non_blocking=True)
             pos = pos.to('cuda', non_blocking=True)
             neg = neg.to('cuda', non_blocking=True)
-            print(f"Processing batch: users={users.shape}, pos={pos.shape}, neg={neg.shape}", flush=True)
+            # print(f"Processing batch: users={users.shape}, pos={pos.shape}, neg={neg.shape}", flush=True)
 
             with autocast(device_type='cuda', dtype=torch.float16):
                 # forward pass
@@ -106,22 +119,19 @@ def train():
             epoch_loss += loss.item()
             print("Backward pass complete, optimizer step done.", flush=True)
 
+        # FAISS-based evaluation
         print("Syncing to CPU for eval", flush=True)
         torch.cuda.empty_cache()
         model_cpu.load_state_dict(model_gpu.state_dict())  # sync weights to CPU model
-        model_cpu.eval()
-        with torch.no_grad():
-            emb_full = model_cpu.get_embedding(edge_index_cpu)
-
-        # validation
-        hr10 = evaluate_hr10(
-            embeddings=emb_full, 
-            val_df=val_df, 
-            num_users=num_users, 
-            num_items=num_items, 
-            rowptr=rowptr,
-            col=col_tensor, 
-            num_neg=1000)
+        hr10 = evaluate_faiss(
+            model_cpu, 
+            val_loader, 
+            num_users, 
+            num_items, 
+            device='cpu',
+            chunk_size=100_000,
+            k=10
+        )
         print(f"Epoch {epoch:02d} | Loss: {epoch_loss:.4f} | HR@10: {hr10:.4f}", flush=True)
 
         # checkpoint
