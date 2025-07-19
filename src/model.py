@@ -3,6 +3,7 @@ import glob
 from torch.utils.data import IterableDataset
 import torch.nn.functional as F
 from torch_geometric.nn.models import LightGCN as _LightGCN
+from torch_geometric.loader import NeighborSampler
 import random
 import faiss
 import numpy as np
@@ -42,59 +43,6 @@ def bpr_loss(users, pos_items, neg_items, embeddings):
     loss = -F.logsigmoid(pos_scores - neg_scores).mean()
     return loss
 
-# BPR sampling
-def sample_bpr_batch(
-    users,      # CPU LongTensor of user indices [B]
-    rowptr,     # CPU LongTensor CSR indptr [num_nodes+1]
-    col,        # CPU LongTensor CSR indices [num_edges]
-    num_users,
-    num_items,
-    num_neg=1
-):
-    out_u, out_pos, out_neg = [], [], []
-
-    for u in users.tolist():
-        # 1) slice out this user's global neighbors
-        start, end = rowptr[u].item(), rowptr[u+1].item()
-        neigh = col[start:end]                  # a small 1-D tensor
-
-        # 2) keep only item-neighbors and shift to local [0..num_items)
-        pos_tensor = neigh[neigh >= num_users] - num_users
-        if pos_tensor.numel() == 0:
-            continue
-
-        # 3) for each negative we want:
-        for _ in range(num_neg):
-            # — sample a positive by random index into pos_tensor
-            idx = torch.randint(0, pos_tensor.size(0), (1,), dtype=torch.long).item()
-            pos_local = pos_tensor[idx].item()
-            pos_global = pos_local + num_users
-
-            # — sample a negative by rejection, checking via tensor compare
-            neg_local = random.randrange(num_items)
-            # membership test via tensor equality and any()
-            while (pos_tensor == neg_local).any().item():
-                neg_local = random.randrange(num_items)
-            neg_global = neg_local + num_users
-
-            # record the triple
-            out_u.append(u)
-            out_pos.append(pos_global)
-            out_neg.append(neg_global)
-
-    if not out_u:
-        return (
-            torch.empty(0, dtype=torch.long),
-            torch.empty(0, dtype=torch.long),
-            torch.empty(0, dtype=torch.long),
-        )
-
-    return (
-        torch.tensor(out_u, dtype=torch.long),
-        torch.tensor(out_pos, dtype=torch.long),
-        torch.tensor(out_neg, dtype=torch.long),
-    )
-
 # BPR Loader Class
 class BPRChunkDataset(IterableDataset):
     def __init__(self, chunk_dir: str, shuffle: bool = False):
@@ -116,58 +64,6 @@ class BPRChunkDataset(IterableDataset):
             # yield triple-by-triple
             for i in idxs:
                 yield users[i].item(), pos[i].item(), neg[i].item()
-
-def evaluate_hr10(embeddings, val_df, num_users, num_items, rowptr, col, num_neg=1000):
-    """
-    embeddings:    [num_users + num_items, D] tensor on CPU
-    val_df:        DataFrame with columns ['u_idx','s_idx'] (global item idx)
-    num_users:     number of users
-    num_items:     number of items
-    rowptr, col:   CSR representation of the full training graph (global node ids)
-    num_neg:       number of negatives to sample per positive
-    """
-    user_emb = embeddings[:num_users]       # [U, D]
-    item_emb = embeddings[num_users:]       # [I, D]
-    hits, total = 0, 0
-
-    # all_items = set(range(num_items))
-
-    for u, global_i in zip(val_df['u_idx'], val_df['s_idx']):
-        #shift to 0...I-1
-        pos_i = global_i - num_users  # global index to local item index
-
-        # pull this user's training neighbors from CSR
-        start, end = rowptr[u].item(), rowptr[u + 1].item()
-        neigh_global = col[start:end]     # a torch.LongTensor of global IDs
-
-        # extract only the item-neighbors, and make a set of local indices
-        #    (i.e. for each n >= num_users, local = n - num_users)
-        pos_set = set(
-            (neigh_global[neigh_global >= num_users] - num_users).tolist()
-        )
-
-        # sample negatives by rejection until we have num_neg
-        negs = []
-        while len(negs) < num_neg:
-            cand = random.randrange(num_items)
-            if cand not in pos_set and cand != pos_i:
-                negs.append(cand)
-
-        # build candidate list (positive first, then negatives)
-        candidates = [pos_i] + negs
-
-        # score the user against these candidates
-        u_vec = user_emb[u].unsqueeze(0)   # [1, D]
-        c_vecs = item_emb[torch.tensor(candidates, dtype=torch.long)]
-        scores = (u_vec @ c_vecs.t()).squeeze(0)   # [N+1]
-
-        # check if the positive (index 0) is in top-10
-        top10 = torch.topk(scores, k=10).indices.tolist()
-        if 0 in top10:
-            hits += 1
-        total += 1
-
-    return hits / total if total > 0 else 0.0
 
 def compute_hits(preds: np.ndarray, true_items: np.ndarray):
     """
@@ -227,3 +123,41 @@ def evaluate_faiss(
         total += ue.shape[0]
 
     return hits / total if total > 0 else 0.0
+
+def infer_embeddings(model, edge_index, num_nodes, emb_dim, 
+                     batch_size=4096, num_layers=3):
+    """
+    Compute full [num_nodes×emb_dim] embeddings on GPU in batches.
+    """
+    # build inference sampler
+    sampler = NeighborSampler(
+        edge_index,
+        sizes=[-1] * num_layers,  # full neighborhood
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+    )
+
+    # prepare output buffer
+    out = torch.empty(num_nodes, emb_dim, device='cuda')
+
+    # pull initial embeddings
+    x0 = model.embedding.weight
+    
+    model.eval()
+    with torch.no_grad():
+        # 4) Stream over node batches
+        for batch_size_, n_id, adjs in sampler():
+            # n_id: the global node IDs in this batch
+            h = x0[n_id]   # gather initial features for this batch
+
+            # adjs is a list of (edge_index, e_id, size) tuples, one per hop
+            for conv, (edge_idx, _, size) in zip(model.convs, adjs):
+                h_target = h[: size[1]]               # first `size[1]` rows
+                h = conv((h, h_target), edge_idx.to('cuda'))
+
+            # write the seed‐node embeddings back to out
+            out[n_id[: batch_size_]] = h_target
+
+    return out   # [num_nodes×emb_dim] on GPU
+        

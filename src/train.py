@@ -4,7 +4,7 @@ from torch_geometric.loader import NeighborLoader
 from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
-from src.model import bpr_loss, BPRChunkDataset, evaluate_faiss
+from src.model import bpr_loss, BPRChunkDataset, evaluate_faiss, infer_embeddings
 from tqdm.auto import tqdm
 from torch_sparse import SparseTensor
 
@@ -39,21 +39,14 @@ def train():
     item_idx = torch.from_numpy(val_df['s_idx'].values).long()
     val_dataset = TensorDataset(user_idx, item_idx)
 
-    # build CSR on CPU
-    num_nodes = num_users + num_items
-    src, dst = graph_data.edge_index
-    adj_t = SparseTensor(row=src, col=dst, sparse_sizes=(num_nodes, num_nodes))
-    rowptr, col_tensor, _ = adj_t.csr()
-    print("CSR built: rowptr", rowptr.shape, "col", col_tensor.shape)
-
     # Copy to GPU
     graph_data = graph_data.to(device='cuda')
     print("Graph data moved to GPU.")
 
     # init model and optimizer
     model_gpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).to(device='cuda')
-    model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).cpu()  # for CPU eval
-    model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
+    # model_cpu = LightGCN(num_nodes=num_users + num_items, embedding_dim=64, num_layers=3).cpu()  # for CPU eval
+    # model_cpu.load_state_dict(model_gpu.state_dict())  # copy weights to CPU model
     optimizer = torch.optim.Adam(model_gpu.parameters(), lr=lr)
     scaler = GradScaler()
     print("Model initialized.")
@@ -122,10 +115,15 @@ def train():
         # FAISS-based evaluation
         print("Syncing to CPU for eval", flush=True)
         torch.cuda.empty_cache()
-        model_gpu.eval()
-        with torch.no_grad():
-            emb_full = model_gpu.get_embedding(graph_data.edge_index)
-        emb_full = emb_full.cpu()  # move embeddings to CPU for FAISS
+        emb_dim = model_gpu.embedding_dim
+        emb_full_gpu = infer_embeddings(
+            model_gpu,
+            graph_data.edge_index,   # already on GPU
+            num_nodes = num_users + num_items,
+            emb_dim    = emb_dim,
+            batch_size=4096          # tune up or down as needed
+        )
+        emb_full = emb_full_gpu.cpu()      
         # Slice embeddings into numpy arrays (float32 for FAISS)
         user_emb = emb_full[:num_users].numpy().astype('float32')
         item_emb = emb_full[num_users:].numpy().astype('float32')
