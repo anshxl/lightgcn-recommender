@@ -154,7 +154,7 @@ def infer_embeddings(model, edge_index, num_nodes, emb_dim,
             # adjs is a list of (edge_index, e_id, size) tuples, one per hop
             for conv, (edge_idx, _, size) in zip(model.convs, adjs):
                 h_target = h[: size[1]]               # first `size[1]` rows
-                h = conv((h, h_target), edge_idx.to('cuda'))
+                h = conv(h, edge_idx.to('cuda'))
 
             # write the seed‐node embeddings back to out
             out[n_id[: batch_size_]] = h_target
